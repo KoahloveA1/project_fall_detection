@@ -1,0 +1,54 @@
+# Bỏ qua toàn bộ các file và thư mục mặc định
+*
+
+# NHƯNG KHÔNG bỏ qua các thư mục (để Git có thể đi vào tìm file cần thiết)
+!*/
+
+# Giữ lại file .gitignore này
+!.gitignore
+
+# ---------------------------------------------------------
+# 1. CÁC FILE INFERENCE (CHẠY THỰC TẾ)
+# ---------------------------------------------------------
+!test_video_display.py
+!test_webcam.py
+!test_video.py
+
+# Các file phụ trợ bắt buộc phải có để script inference chạy được
+!iou_tracker.py
+!data_preparation.py
+!train_lstm.py
+
+# ---------------------------------------------------------
+# 2. CÁC FILE MÔ HÌNH (MODELS)
+# ---------------------------------------------------------
+# PyTorch Models
+!yolo26n-pose.pt
+!fall_lstm_best.pt
+
+# ONNX Models (Đã tối ưu cho Mobile)
+!yolo26n-pose.onnx
+!fall_lstm_best.onnx
+
+# ---------------------------------------------------------
+# 3. FILE HƯỚNG DẪN & TÀI LIỆU
+# ---------------------------------------------------------
+!README.md
+!android_integration_guide.md
+!tflite_export_guide.md
+!colab_export_tflite.py
+
+# ---------------------------------------------------------
+# 4. CHẶN TUYỆT ĐỐI CÁC THƯ MỤC/FILE RÁC KHÔNG CẦN THIẾT
+# ---------------------------------------------------------
+venv/
+__pycache__/
+.git/
+.DS_Store
+archive/
+debug_frames/
+results/
+dataset_tensors/
+*.mp4
+*.avi
+*.data
