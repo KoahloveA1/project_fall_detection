@@ -8,7 +8,7 @@ DATA_CSV_DIR = "/Users/ledangkhoa/do_an/results/extracted_keypoints"
 ARCHIVE_DIR = "/Users/ledangkhoa/do_an/archive"
 OUTPUT_DIR = "/Users/ledangkhoa/do_an/dataset_tensors"
 
-SEQ_LEN = 15
+SEQ_LEN = 30
 # Augmentation multipliers
 AUGMENT_COPIES = 3 
 
@@ -46,6 +46,7 @@ def normalize_window(window_kpts):
     
     prev_cx, prev_cy = None, None
     prev_scale = 1.0
+    prev_head_y = None
     
     for i in range(len(window_kpts)):
         kpts = window_kpts[i]
@@ -82,13 +83,21 @@ def normalize_window(window_kpts):
             if prev_cx is not None:
                 delta_x = (cx - prev_cx) / prev_scale
                 delta_y = (cy - prev_cy) / prev_scale
+                
+                if valid_mask[0] and prev_head_y is not None:
+                    head_delta_y = (kpts[0, 1] - prev_head_y) / prev_scale
+                else:
+                    head_delta_y = 0.0
             else:
                 delta_x = 0.0
                 delta_y = 0.0
+                head_delta_y = 0.0
                 
             # Cập nhật prev
             prev_cx, prev_cy = cx, cy
             prev_scale = scale
+            if valid_mask[0]:
+                prev_head_y = kpts[0, 1]
             
             # 4. Chuẩn hóa 17 điểm theo tư thế hiện tại
             frame_features = []
@@ -100,13 +109,14 @@ def normalize_window(window_kpts):
                 else:
                     frame_features.extend([0.0, 0.0])
                     
-            # Thêm aspect_ratio, delta_x, delta_y
-            frame_features.extend([aspect_ratio, delta_x, delta_y])
+            # Thêm aspect_ratio, delta_x, delta_y, head_delta_y
+            frame_features.extend([aspect_ratio, delta_x, delta_y, head_delta_y])
             normalized.append(frame_features)
         else:
-            normalized.append([0.0] * 37)
+            normalized.append([0.0] * 38)
             # Khởi tạo lại prev nếu bị mất tracking
             prev_cx, prev_cy = None, None
+            prev_head_y = None
             
     return np.array(normalized, dtype=np.float32)
 

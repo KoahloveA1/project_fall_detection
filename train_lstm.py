@@ -8,16 +8,16 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
 # Hyperparameters
-INPUT_SIZE = 37
+INPUT_SIZE = 38
 HIDDEN_SIZE = 64
 NUM_LAYERS = 2
 BATCH_SIZE = 64
 EPOCHS = 30
 LEARNING_RATE = 0.001
-SEQ_LEN = 15
+SEQ_LEN = 30
 
 DATA_DIR = "/Users/ledangkhoa/do_an/dataset_tensors"
-MODEL_PATH = "/Users/ledangkhoa/do_an/fall_lstm_best.pt"
+MODEL_PATH = "/Users/ledangkhoa/do_an/fall_lstm_best_v2.pt"
 
 # Detect device (MPS for Apple Silicon, otherwise CPU)
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")

@@ -12,7 +12,7 @@ from data_preparation import normalize_window
 def test_pipeline(video_path, output_path):
     print("Loading models...")
     # Load YOLO-Pose (yolov8n-pose.pt will be downloaded automatically)
-    yolo_model = YOLO("yolov8n-pose.pt")
+    yolo_model = YOLO("yolo26n-pose.pt")
     
     # Load LSTM
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -95,7 +95,7 @@ def test_pipeline(video_path, output_path):
                 
                 print(f"Frame {frame_count:03d} | Prob: {prob:.4f}")
                 
-                if prob > 0.5:
+                if prob > 0.75:
                     is_fall = True
 
         # Annotate Frame
@@ -115,8 +115,15 @@ def test_pipeline(video_path, output_path):
     print(f"✅ Video processing complete! Saved to {output_path}")
 
 if __name__ == "__main__":
-    # Pick a random video from the dataset that has a fall
-    # Let's use a Coffee_room_01 video which typically has a fall
-    VIDEO_PATH = "tạo_cho_tôi_một_video_té_ngã_n.mp4"
-    OUTPUT_PATH = "/Users/ledangkhoa/do_an/test_output.mp4"
+    import sys
+    if len(sys.argv) > 1:
+        VIDEO_PATH = sys.argv[1]
+    else:
+        VIDEO_PATH = "/Users/ledangkhoa/do_an/Test2.mp4"
+        
+    if len(sys.argv) > 2:
+        OUTPUT_PATH = sys.argv[2]
+    else:
+        OUTPUT_PATH = VIDEO_PATH.replace(".mp4", "_output2.mp4")
+        
     test_pipeline(VIDEO_PATH, OUTPUT_PATH)

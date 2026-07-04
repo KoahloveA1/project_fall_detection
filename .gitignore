@@ -23,20 +23,22 @@
 # 2. CÁC FILE MÔ HÌNH (MODELS)
 # ---------------------------------------------------------
 # PyTorch Models
-!yolo26n-pose.pt
-!fall_lstm_best.pt
+!*.pt
 
-# ONNX Models (Đã tối ưu cho Mobile)
-!yolo26n-pose.onnx
-!fall_lstm_best.onnx
+# ONNX Models
+!*.onnx
+
+# TFLite Models (Đã tối ưu cho Mobile)
+!*.tflite
 
 # ---------------------------------------------------------
-# 3. FILE HƯỚNG DẪN & TÀI LIỆU
+# 3. FILE HƯỚNG DẪN & SCRIPT MỚI
 # ---------------------------------------------------------
 !README.md
-!android_integration_guide.md
-!tflite_export_guide.md
-!colab_export_tflite.py
+!huong_dan_su_dung/
+!tflite_models/
+!mobile_pipeline_sim.py
+!colab_export*.py
 
 # ---------------------------------------------------------
 # 4. CHẶN TUYỆT ĐỐI CÁC THƯ MỤC/FILE RÁC KHÔNG CẦN THIẾT
@@ -52,3 +54,4 @@ dataset_tensors/
 *.mp4
 *.avi
 *.data
+venv310/

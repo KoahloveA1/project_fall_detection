@@ -3,119 +3,137 @@ import torch
 import numpy as np
 import time
 import collections
-from train_lstm import FallDetectionLSTM, INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS
+import onnxruntime as ort
 from ultralytics import YOLO
 
-SEQ_LEN = 15
+SEQ_LEN = 30
+LSTM_THRESHOLD = 0.5
+DROP_RATIO_THRESHOLD = 0.15
 
-from data_preparation import normalize_window
+# Import hàm normalize và compute_drop_ratio từ mobile_pipeline_sim
+from mobile_pipeline_sim import normalize_window, compute_drop_ratio
 
 def test_webcam():
-    print("Loading models...")
-    # Tải YOLO-Pose
-    yolo_model = YOLO("yolo26n-pose.pt")
-    
-    # Tải LSTM
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    lstm_model = FallDetectionLSTM(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS).to(device)
-    lstm_model.load_state_dict(torch.load("/Users/ledangkhoa/do_an/fall_lstm_best.pt", map_location=device))
-    lstm_model.eval()
+    print("Đang tải model...")
+    device = "mps" if hasattr(__import__('torch').backends, 'mps') and __import__('torch').backends.mps.is_available() else "cpu"
+    print(f"YOLO sẽ chạy trên: {device.upper()}")
+    yolo_model = YOLO("yolo26n-pose.mlpackage", task="pose")
 
-    # Mở camera mặc định của laptop (ID 0)
+    lstm_session = ort.InferenceSession("tflite_models/fall_lstm_v2.onnx")
+    lstm_input_name = lstm_session.get_inputs()[0].name
+    lstm_output_name = lstm_session.get_outputs()[0].name
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Lỗi: Không thể mở camera!")
         return
 
-    # Multi-person Tracking
     track_history = collections.defaultdict(lambda: collections.deque(maxlen=SEQ_LEN))
-    alarm_cooldown = collections.defaultdict(int)
-    
-    print("Camera đã bật! (Bấm phím 'q' trên cửa sổ camera để thoát)")
-    
+
+    skeleton = [(15,13),(13,11),(16,14),(14,12),(11,12),(5,11),(6,12),
+                (5,6),(5,7),(6,8),(7,9),(8,10),(1,2),(0,1),(0,2),(1,3),(2,4),(3,5),(4,6)]
+
+    prev_time = time.time()
+    print("Camera đã bật! Bấm 'q' để thoát.")
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
             
-        # Chạy YOLO-Pose với ByteTrack để theo dõi nhiều người cùng lúc cực kỳ ổn định
-        results = yolo_model.track(frame, persist=True, tracker="bytetrack.yaml", verbose=False, device=device)
-        
+        t0 = time.time()
+        # Sử dụng mô hình CoreML (.mlpackage) để có keypoint xịn và max FPS trên Mac
+        results = yolo_model.track(frame, persist=True, tracker="bytetrack.yaml",
+                                   verbose=False)
+        t_yolo = time.time() - t0
+        t_lstm = 0.0
+
         is_any_fall = False
-        
+
         if len(results[0].boxes) > 0 and results[0].boxes.id is not None:
             boxes = results[0].boxes
             ids = boxes.id.cpu().numpy().astype(int)
-            confs = boxes.conf.cpu().numpy()
-            xyxys = boxes.xyxy.cpu().numpy()
             kpts = results[0].keypoints.data.cpu().numpy()
-            
+
             for i in range(len(ids)):
                 track_id = ids[i]
                 raw_kpt = kpts[i]
-                bbox = xyxys[i]
-                
-                # Đưa keypoints vào buffer của riêng ID này
+                bbox = boxes.xyxy.cpu().numpy()[i]
+                x1, y1, x2, y2 = map(int, bbox)
+
                 track_history[track_id].append(raw_kpt)
-                
-                fall_prob = 0.0
-                is_fall = False
-                
-                # Khi gom đủ 15 frames cho người này thì chạy dự đoán LSTM
+
+                color = (0, 255, 0)
+                label = ""
+
                 if len(track_history[track_id]) == SEQ_LEN:
                     seq_array = np.array(track_history[track_id], dtype=np.float32)
-                    norm_seq = normalize_window(seq_array) # Shape: (15, 37)
-                    seq_tensor = torch.tensor(norm_seq).unsqueeze(0).to(device)
+                    norm_seq = normalize_window(seq_array)
+                    input_data = np.expand_dims(norm_seq, axis=0).astype(np.float32)
+
+                    t1 = time.time()
+                    outputs = lstm_session.run([lstm_output_name], {lstm_input_name: input_data})
+                    t_lstm = time.time() - t1
                     
-                    with torch.no_grad():
-                        output = lstm_model(seq_tensor)
-                        prob = torch.sigmoid(output).item()
-                        fall_prob = prob
-                        
-                        # Bộ lọc Post-processing để loại bỏ nhiễu từ người ở xa hoặc đang đứng
-                        bbox_w = bbox[2] - bbox[0]
-                        bbox_h = bbox[3] - bbox[1]
-                        aspect_ratio = bbox_w / bbox_h if bbox_h > 0 else 0
-                        
-                        # 1. Bỏ qua nếu người quá nhỏ (ở tít phía sau)
-                        is_large_enough = bbox_h > (frame.shape[0] / 3.0) 
-                        # 2. Bỏ qua nếu dáng người đang thẳng đứng (ngã thì phải nằm ngang/co cụm)
-                        is_not_standing = aspect_ratio > 0.6
-                        
-                        if prob > 0.5 and is_large_enough and is_not_standing:
-                            alarm_cooldown[track_id] = 30
-                            print(f"🔥 FALL DETECTED on ID {track_id}! Prob: {prob:.4f}")
-                
-                if alarm_cooldown[track_id] > 0:
-                    is_fall = True
-                    is_any_fall = True
-                    alarm_cooldown[track_id] -= 1
-                    
-                # Vẽ Box và Text cho từng người
-                color = (0, 0, 255) if is_fall else (0, 255, 0)
-                thickness = 4 if is_fall else 2
-                x1, y1, x2, y2 = map(int, bbox)
+                    prob = outputs[0][0][0]
+
+                    drop_ratio = compute_drop_ratio(seq_array)
+
+                    lstm_says_fall = prob > LSTM_THRESHOLD
+                    hip_actually_dropped = drop_ratio > DROP_RATIO_THRESHOLD
+
+                    if lstm_says_fall and hip_actually_dropped:
+                        is_any_fall = True
+                        color = (0, 0, 255)
+                        label = f"FALL ({prob:.2f} D:{drop_ratio:.2f})"
+                        print(f"🔥 FALL ID:{track_id} prob={prob:.2f} drop={drop_ratio:.2f}")
+                    elif lstm_says_fall and not hip_actually_dropped:
+                        color = (0, 165, 255)
+                        label = f"LYING ({prob:.2f} D:{drop_ratio:.2f})"
+                    else:
+                        label = f"OK ({prob:.2f})"
+                else:
+                    label = f"Buffering {len(track_history[track_id])}/{SEQ_LEN}"
+                    t_lstm = 0.0
+
+                # Vẽ bbox
+                thickness = 4 if color == (0, 0, 255) else 2
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-                
-                status_txt = "FALL" if is_fall else "NORMAL"
-                cv2.putText(frame, f"ID:{track_id} {status_txt} ({fall_prob*100:.0f}%)", 
-                            (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                
-                # Vẽ khớp xương
+                cv2.putText(frame, f"ID:{track_id} {label}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+                # Vẽ keypoints
                 for kpt in raw_kpt:
                     x, y, conf = kpt
                     if conf > 0.2:
                         cv2.circle(frame, (int(x), int(y)), 4, color, -1)
 
-        # Hiển thị cảnh báo tổng
+                # Vẽ skeleton
+                for u, v in skeleton:
+                    if raw_kpt[u, 2] > 0.2 and raw_kpt[v, 2] > 0.2:
+                        cv2.line(frame,
+                                 (int(raw_kpt[u, 0]), int(raw_kpt[u, 1])),
+                                 (int(raw_kpt[v, 0]), int(raw_kpt[v, 1])),
+                                 color, 1)
+
+        # FPS
+        curr_time = time.time()
+        fps = 1.0 / (curr_time - prev_time + 1e-5)
+        prev_time = curr_time
+        
+        # Chỉ in log ra console mỗi 10 frame để không bị trôi
+        if int(curr_time * 10) % 10 == 0:
+            print(f"FPS: {fps:.1f} | YOLO: {t_yolo*1000:.1f}ms | LSTM: {t_lstm*1000:.1f}ms" if 't_yolo' in locals() else f"FPS: {fps:.1f}")
+
+        # Header
         main_color = (0, 0, 255) if is_any_fall else (0, 255, 0)
-        main_text = "FALL DETECTED!" if is_any_fall else "ALL NORMAL"
-        cv2.putText(frame, main_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, main_color, 3)
-        
-        # Mở cửa sổ hiển thị camera
-        cv2.imshow("Webcam Fall Detection", frame)
-        
-        # Bấm phím 'q' để thoát
+        main_text = "⚠️  FALL DETECTED!" if is_any_fall else "ALL NORMAL"
+        cv2.putText(frame, main_text, (10, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, main_color, 3)
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(frame, "Fall Detection v2 | Press Q to quit",
+                    (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        cv2.imshow("Fall Detection - Webcam", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 

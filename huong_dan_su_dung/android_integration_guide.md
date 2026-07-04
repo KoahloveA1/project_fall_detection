@@ -1,156 +1,177 @@
-# Hướng Dẫn Tích Hợp Fall Detection Lên Android (Kotlin)
+# Hướng Dẫn Tích Hợp Fall Detection Lên Android (Kotlin & TFLite)
 
-Quá trình đưa hệ thống từ Python (Mac) lên Android cần một số chuyển đổi về mặt công cụ. 
-Lúc đầu chúng ta định dùng **TFLite**, tuy nhiên việc convert sang TFLite trên môi trường Python 3.14 hiện tại của bạn đang bị lỗi thư viện từ phía Google (`litert-torch`). Ngoài ra, mô hình LSTM bằng PyTorch lại cực kỳ khó chuyển sang TFLite do đặc thù của kiến trúc chuỗi.
-
-Do đó, **Giải pháp tối ưu nhất cho Android (chuẩn công nghiệp)** là sử dụng **ONNX Runtime Mobile** cho **CẢ 2 MÔ HÌNH (YOLO-Pose và LSTM)**. ONNX Runtime do Microsoft phát triển, hỗ trợ Android cực kỳ tốt và chạy trực tiếp file `.onnx` từ PyTorch mà không lo mất mát dữ liệu hay sai lệch cấu trúc!
-
-Dưới đây là hướng dẫn các bước thực hiện bằng Kotlin.
+Tài liệu này hướng dẫn bạn cách tích hợp pipeline Fall Detection (YOLO-Pose + LSTM) lên Android bằng ngôn ngữ Kotlin, sử dụng công nghệ **TensorFlow Lite (TFLite)**. Mô hình đã được ép cứng kích thước 480x640 (chuẩn dọc Mobile) và tích hợp thuật toán "Bộ lọc rơi" (Drop Velocity) cùng với "Duy trì cảnh báo ngã 3 giây" (State Sustain).
 
 ---
 
-## 1. Xuất Mô Hình (Model Export)
+## 1. Chuẩn Bị Mô Hình (TFLite Models)
 
-Mình đã chạy lệnh xuất YOLO sang ONNX cho bạn (nó sẽ tạo ra file `yolo26n-pose.onnx`):
-```bash
-./venv/bin/yolo export model=yolo26n-pose.pt format=onnx
-```
-
-Đối với LSTM, bạn hãy sử dụng file `fall_lstm_best.onnx` đã có sẵn. 
-👉 Hãy copy 2 file `.onnx` này vào thư mục `app/src/main/assets/` của project Android Studio của bạn.
+Hãy copy 2 file TFLite sau vào thư mục `app/src/main/assets/` của project Android Studio của bạn:
+1. `yolo26n-pose.tflite` (hoặc bản nhẹ `yolo26n-pose_w8a16.tflite`)
+2. `fall_lstm_v2_fp32.tflite`
 
 ---
 
 ## 2. Cài Đặt Thư Viện (build.gradle)
 
-Bạn cần thêm các dependency sau vào `app/build.gradle`:
+Bạn cần thêm các dependency sau vào file `app/build.gradle`:
 
 ```gradle
 dependencies {
-    // CameraX để lấy luồng video
+    // CameraX để lấy luồng video từ camera điện thoại
     def camerax_version = "1.3.0"
     implementation "androidx.camera:camera-core:${camerax_version}"
     implementation "androidx.camera:camera-camera2:${camerax_version}"
     implementation "androidx.camera:camera-lifecycle:${camerax_version}"
     implementation "androidx.camera:camera-view:${camerax_version}"
 
-    // ONNX Runtime cho cả YOLO và LSTM
-    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.1'
+    // TensorFlow Lite
+    implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+    implementation 'org.tensorflow:tensorflow-lite-support:0.4.4'
 }
 ```
 
 ---
 
-## 3. Kiến Trúc Pipeline Trong Kotlin
+## 3. Kiến Trúc Pipeline Bằng Kotlin
 
-Bạn sẽ cần tạo 3 module chính trong Kotlin:
+### A. Quản Lý Trạng Thái Ngã (State Maintainer)
+Theo thuật toán mới nhất, ta cần duy trì cảnh báo "FALL" trong 3 giây (tương đương 90 frames nếu video là 30 FPS).
+Tạo một biến toàn cục hoặc property trong class Camera của bạn:
 
-### A. Lớp `YoloPoseDetector` (ONNX)
-Lớp này nhận vào ảnh `Bitmap`, resize về 640x640, convert sang mảng FloatArray và chạy qua ONNX Runtime. Output sẽ là tensor `[1, 57, 8400]`.
-Bạn sẽ cần viết một hàm NMS (Non-Maximum Suppression) trong Kotlin để lọc ra Bounding Box và Keypoints.
-
-### B. Lớp `ByteTracker` (Tracking Đa Mục Tiêu)
-Trong Python chúng ta gọi `yolo.track()`. Trên Android, bạn cần implement một thuật toán Tracking (ByteTrack hoặc SORT) bằng Kotlin. Nếu muốn đơn giản, bạn có thể tự viết hàm **IoU Tracker** (Intersection over Union) như sau:
 ```kotlin
-// Hàm so sánh Box hiện tại với các Box ở Frame trước bằng IoU để gán ID
-fun matchTracking(currentBoxes: List<RectF>, previousTracks: Map<Int, RectF>): Map<Int, RectF> {
-    // Logic gán ID cho người mới, giữ ID cho người cũ bằng cách tìm IoU cao nhất
-}
+// Key: trackId, Value: số frame còn lại để đếm ngược (ví dụ 90 -> 0)
+private val fallTimers = mutableMapOf<Int, Int>()
 ```
 
-### C. Lớp `LstmFallDetector` (ONNX Runtime)
-Lớp này sẽ tái tạo lại chính xác hàm `normalize_window` của Python và chạy mô hình ONNX LSTM.
+### B. Lớp `FallPipeline` (TFLite)
+Lớp này đóng vai trò load 2 mô hình TFLite và xử lý luồng dữ liệu 30 frames.
 
 ```kotlin
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
+import android.content.Context
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.FileUtil
 import java.nio.FloatBuffer
 
-class LstmFallDetector(assetManager: AssetManager) {
-    private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession
+class FallPipeline(context: Context) {
+    private var yoloInterpreter: Interpreter
+    private var lstmInterpreter: Interpreter
 
-    // Lưu trữ buffer 15 frames cho TỪNG ID
+    // Lưu trữ buffer 30 frames cho TỪNG ID người (SEQ_LEN = 30)
     private val trackHistory = mutableMapOf<Int, MutableList<FloatArray>>()
 
     init {
-        val modelBytes = assetManager.open("fall_lstm_best.onnx").readBytes()
-        session = env.createSession(modelBytes, OrtSession.SessionOptions())
+        // Load YOLO-Pose
+        val yoloModel = FileUtil.loadMappedFile(context, "yolo26n-pose.tflite")
+        val yoloOptions = Interpreter.Options().apply { setNumThreads(4) }
+        yoloInterpreter = Interpreter(yoloModel, yoloOptions)
+
+        // Load LSTM
+        val lstmModel = FileUtil.loadMappedFile(context, "fall_lstm_v2_fp32.tflite")
+        val lstmOptions = Interpreter.Options().apply { setNumThreads(2) }
+        lstmInterpreter = Interpreter(lstmModel, lstmOptions)
     }
 
-    fun processPerson(trackId: Int, keypoints: Array<FloatArray>, bboxW: Float, bboxH: Float, frameHeight: Float): Float {
+    /**
+     * Hàm gọi mỗi frame cho mỗi người (trackId). 
+     * Trả về Pair<Boolean, Boolean> -> (lstm_says_fall, hip_actually_dropped)
+     */
+    fun processPerson(trackId: Int, keypoints: Array<FloatArray>): Pair<Boolean, Boolean> {
         val buffer = trackHistory.getOrPut(trackId) { mutableListOf() }
         
-        // Flatten 17 keypoints (3 trục X, Y, Conf) thành mảng 1D
-        val flatKpts = FloatArray(17 * 3)
-        // ... (copy data)
-        buffer.add(flatKpts)
+        // keypoints là mảng 17 điểm, mỗi điểm chứa [x, y, conf]
+        buffer.add(flattenKeypoints(keypoints))
 
-        if (buffer.size > 15) buffer.removeAt(0)
+        if (buffer.size > 30) buffer.removeAt(0)
         
-        if (buffer.size == 15) {
-            // Thực hiện Normalize giống hệt hàm normalize_window trong Python
+        if (buffer.size == 30) {
+            // 1. Chuẩn hóa chuỗi 30 frames thành mảng (30 x 38 features)
             val normalizedData = normalizeWindow(buffer) 
-
-            // Chạy LSTM
-            val tensorShape = longArrayOf(1, 15, 37)
-            val floatBuffer = FloatBuffer.wrap(normalizedData)
-            val inputTensor = OnnxTensor.createTensor(env, floatBuffer, tensorShape)
             
-            val result = session.run(mapOf("input" to inputTensor))
-            val outputTensor = result.get(0).value as Array<FloatArray>
+            // 2. Chạy LSTM (Input: [1, 30, 38])
+            val inputBuffer = FloatBuffer.wrap(normalizedData)
+            val outputBuffer = FloatBuffer.allocate(1) // Output: [1, 1]
             
-            val prob = sigmoid(outputTensor[0][0])
+            lstmInterpreter.run(inputBuffer, outputBuffer)
             
-            // Các bộ lọc nhiễu chuẩn hóa (Kích thước và Aspect Ratio)
-            val aspectRatio = bboxW / bboxH
-            if (prob > 0.5f && aspectRatio > 0.6f && bboxH > (frameHeight / 3.0f)) {
-                return prob // Xác nhận té ngã
-            }
+            val prob = outputBuffer.get(0)
+            
+            // 3. Tính toán độ rơi của hông (Velocity Drop Filter)
+            val dropRatio = computeDropRatio(buffer)
+            
+            val lstmSaysFall = prob > 0.5f
+            val hipActuallyDropped = dropRatio > 0.15f
+            
+            return Pair(lstmSaysFall, hipActuallyDropped)
         }
-        return 0f
+        
+        return Pair(false, false)
+    }
+
+    private fun flattenKeypoints(kpts: Array<FloatArray>): FloatArray {
+        // Chuyển cấu trúc 2D thành mảng 1D (51 phần tử) để dễ lưu trữ
+        val flat = FloatArray(17 * 3)
+        for (i in 0 until 17) {
+            flat[i * 3] = kpts[i][0]
+            flat[i * 3 + 1] = kpts[i][1]
+            flat[i * 3 + 2] = kpts[i][2] // conf
+        }
+        return flat
     }
 
     private fun normalizeWindow(buffer: List<FloatArray>): FloatArray {
-        // Implement logic: 
-        // 1. Dịch tâm hông (Pelvis) về (0,0)
-        // 2. Scale bằng max(bboxW, bboxH)
-        // 3. Tính Delta_X, Delta_Y (Vận tốc)
-        // Lưu ý: Code này phải giống 100% logic trong file data_preparation.py
-        return FloatArray(15 * 37) 
+        // Bạn cần port hàm normalize_window() từ Python sang đây.
+        // Kết quả trả về phải là một mảng FloatArray có kích thước 30 * 38 = 1140 phần tử
+        return FloatArray(30 * 38)
     }
 
-    private fun sigmoid(x: Float): Float {
-        return (1 / (1 + Math.exp(-x.toDouble()))).toFloat()
+    private fun computeDropRatio(buffer: List<FloatArray>): Float {
+        // Bạn cần port hàm compute_drop_ratio() từ Python sang đây.
+        // Trả về số thực đại diện cho drop_ratio (ví dụ 0.2f)
+        return 0f
     }
 }
 ```
 
 ---
 
-## 4. Tích Hợp Lên CameraX (Vòng lặp chính)
+## 4. Tích Hợp Lên CameraX & Tracking (Vòng lặp chính)
+
+Trong class phân tích CameraX (`ImageAnalysis.Analyzer`), hãy cập nhật logic duy trì trạng thái ngã 3 giây (90 frames):
 
 ```kotlin
 imageAnalysis.setAnalyzer(executor) { imageProxy ->
-    val bitmap = imageProxy.toBitmap()
+    val bitmap = imageProxy.toBitmap() // Nhớ resize về 480x640 bằng Letterbox
     
-    // 1. Chạy YOLO
-    val yoloResults = yoloDetector.detect(bitmap)
+    // 1. Chạy YOLO và gán ID (Tracking)
+    // val trackedPeople = ... 
     
-    // 2. Tracking ID
-    val trackedPeople = byteTracker.update(yoloResults)
-    
-    // 3. Duyệt qua từng người
+    // 2. Duyệt qua từng người
     for (person in trackedPeople) {
-        val prob = lstmDetector.processPerson(person.id, person.keypoints, person.width, person.height, bitmap.height.toFloat())
+        val trackId = person.id
+        val (lstmSaysFall, hipDropped) = pipeline.processPerson(trackId, person.keypoints)
         
-        if (prob > 0.5f) {
-            // Báo động rớt: Vẽ khung Đỏ
-            drawBox(person.box, Color.RED, "FALL DETECTED")
+        // 3. Thuật toán duy trì cảnh báo
+        if (lstmSaysFall && hipDropped) {
+            // Ngã thật -> Set timer đếm ngược 90 frames (khoảng 3 giây ở 30 FPS)
+            fallTimers[trackId] = 90
+        }
+        
+        // 4. Quyết định màu khung và hiển thị
+        val currentTimer = fallTimers.getOrDefault(trackId, 0)
+        
+        if (currentTimer > 0) {
+            fallTimers[trackId] = currentTimer - 1
+            // TRẠNG THÁI NGÃ (Duy trì)
+            drawBox(person.box, Color.RED, "FALL DETECTED!")
+            
+            // Nếu muốn phát chuông cảnh báo, hãy kích hoạt tại đây.
+        } else if (lstmSaysFall && !hipDropped) {
+            // LSTM báo ngã nhưng hông không di chuyển -> Đang nằm
+            drawBox(person.box, Color.YELLOW, "LYING")
         } else {
-            // Bình thường: Vẽ khung Xanh
-            drawBox(person.box, Color.GREEN, "NORMAL")
+            // Bình thường
+            drawBox(person.box, Color.GREEN, "OK")
         }
     }
     
@@ -159,4 +180,4 @@ imageAnalysis.setAnalyzer(executor) { imageProxy ->
 ```
 
 ## Chú ý quan trọng:
-Khâu vất vả nhất trên Android sẽ là hàm `normalizeWindow`. Bạn phải đảm bảo thứ tự của 17 điểm khớp xương, cách tính tỷ lệ, và công thức `delta_x = (cx - prev_cx) / prev_scale` phải khớp 100% từng con số với bản Python, nếu không mô hình LSTM sẽ hoạt động không chính xác.
+Khâu vất vả nhất trên Android sẽ là 2 hàm `normalizeWindow` và `computeDropRatio`. Bạn phải đảm bảo thứ tự của 17 điểm khớp xương, cách tính tỷ lệ `aspect_ratio`, công thức tính vận tốc đầu, hông phải khớp **100% từng con số** với bản Python. Nếu không, mô hình LSTM sẽ nhận dữ liệu bị nhiễu và dự đoán sai.

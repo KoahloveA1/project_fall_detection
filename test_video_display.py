@@ -38,7 +38,9 @@ def test_video_display(video_path):
     
     delay = 1
     prev_time = time.time()
+    out = None
     
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -95,7 +97,7 @@ def test_video_display(video_path):
                         # 2. Bỏ qua nếu dáng người đang thẳng đứng (ngã thì phải nằm ngang/co cụm)
                         is_not_standing = aspect_ratio > 0.6
                         
-                        if prob > 0.5 and is_large_enough and is_not_standing:
+                        if prob > 0.85 and is_large_enough and is_not_standing:
                             alarm_cooldown[track_id] = 30
                             print(f"🔥 FALL DETECTED on ID {track_id}! Prob: {prob:.4f}")
                 
@@ -131,19 +133,32 @@ def test_video_display(video_path):
         cv2.putText(frame, main_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, main_color, 3)
         cv2.putText(frame, f"FPS: {fps_display:.1f}", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         
+        if out is None:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps == 0: fps = 30
+            h, w = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            output_path = video_path.replace(".mp4", "_output.mp4")
+            out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
+            print(f"Saving output to {output_path}...")
+            
+        out.write(frame)
+        
         # Mở cửa sổ hiển thị video
-        cv2.imshow("Video Fall Detection", frame)
+        # cv2.imshow("Video Fall Detection", frame)
         
         # Bấm phím 'q' để thoát, delay giúp video chạy đúng tốc độ thực
-        if cv2.waitKey(delay) & 0xFF == ord('q'):
-            break
+        # if cv2.waitKey(delay) & 0xFF == ord('q'):
+        #     break
 
     cap.release()
-    cv2.destroyAllWindows()
+    if out is not None:
+        out.release()
+    # cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         video_path = sys.argv[1]
     else:
-        video_path = "/Users/ledangkhoa/do_an/tạo_cho_tôi_một_video_té_ngã_n.mp4"
+        video_path = "/Users/ledangkhoa/do_an/Test1.mp4"
     test_video_display(video_path)
